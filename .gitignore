@@ -1,0 +1,53 @@
+# name: .gitignore
+# date: 06 Jan 15
+# auth: Zach Hartwig
+# mail: hartwig@psfc.mit.edu
+# desc: List of files for git to completely ignore from repository 
+
+# General 
+*.o
+*.log
+*.cache
+*~
+
+# Ignore top-level ADAQ headers and libraries. They should be
+# installed on the system during the build from source
+include/ADAQ*.hh
+include/ASIM*.hh
+include/MPI*.hh
+include/RootLinkDef.h
+
+lib/i686/*ADAQ*
+lib/i686/*ASIM*
+
+lib/x86_64/*ADAQ*
+lib/x86_64/*ASIM*
+
+# Ignore all ADAQ core library files
+source/ADAQControl/build/*
+source/ADAQReadout/build/*
+source/ASIM/build/*
+source/ASIM/example/lib/*
+
+# Miscellaneous
+templates/CAENAcquisitionTemplate/build/*
+templates/CAENAcquisitionTemplate/bin/*
+ref/caen/software/CAENUpgrader-1.4.1/CAENBridgeUpgrade/Makefile
+ref/caen/software/CAENUpgrader-1.4.1/CAENBridgeUpgrade/src/.deps/
+ref/caen/software/CAENUpgrader-1.4.1/CAENBridgeUpgrade/src/Makefile
+ref/caen/software/CAENUpgrader-1.4.1/CAENUpgraderGUI/Makefile
+ref/caen/software/CAENUpgrader-1.4.1/Makefile
+ref/caen/software/CAENUpgrader-1.4.1/autom4te.cache/
+ref/caen/software/CAENUpgrader-1.4.1/config.h
+ref/caen/software/CAENUpgrader-1.4.1/config.status
+ref/caen/software/CAENUpgrader-1.4.1/cvUpgrade/Makefile
+ref/caen/software/CAENUpgrader-1.4.1/cvUpgrade/src/.deps/
+ref/caen/software/CAENUpgrader-1.4.1/cvUpgrade/src/Makefile
+ref/caen/software/CAENUpgrader-1.4.1/stamp-h1
+ref/caen/drivers/CAENUSBdrvB-1.4/.CAENUSBdrvB.ko.cmd
+ref/caen/drivers/CAENUSBdrvB-1.4/.CAENUSBdrvB.mod.o.cmd
+ref/caen/drivers/CAENUSBdrvB-1.4/.CAENUSBdrvB.o.cmd
+ref/caen/drivers/CAENUSBdrvB-1.4/.tmp_versions/
+ref/caen/drivers/CAENUSBdrvB-1.4/CAENUSBdrvB.ko
+ref/caen/drivers/CAENUSBdrvB-1.4/CAENUSBdrvB.mod.c
+

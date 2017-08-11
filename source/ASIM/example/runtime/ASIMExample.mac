@@ -1,0 +1,34 @@
+#################################################################################
+#
+# name: ASIMExample.mac
+# date: 22 Sep 15
+# auth; Zach Hartwig
+# mail: hartwig@psfc.mit.edu
+# desc: Standard utility macro for automating ASIMExample runs. Place
+#       commands here and then run from the G4 command line by using
+#       the alias '{mac}' to execute this macro
+#
+#################################################################################
+#
+# Set the ASIM file name and initialize
+/ASIM/setFileName Cs137.asim.root
+/ASIM/init
+#
+# Apply gaussian broadening to the energy deposition
+/ASIM/setActiveReadout 0 # The BGO detector
+/ASIM/setEnergyBroadening true
+/ASIM/setEnergyEvaluation 0.662 MeV
+/ASIM/setEnergyResolution 14.0
+#
+/ASIM/setActiveReadout 1 # The NaI detector
+/ASIM/setEnergyBroadening true
+/ASIM/setEnergyEvaluation 0.662 MeV
+/ASIM/setEnergyResolution 8.0
+/ASIM/setWaveformStorage true
+#
+# Setup the particle source and run beam!
+/gps/ene/mono 0.662 MeV
+/run/beamOn 6000
+#
+# Write the ASIM file to disk
+/ASIM/write

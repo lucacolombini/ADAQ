@@ -1,23 +1,25 @@
 ////////////////////////////////////////////////////////////////////////////////
 //
 // name: AcquisitionManager.cc
-// date: 14 Aug 14
+// date: 15 Jul 16
 // auth: Zach Hartwig
 // mail: hartwig@psfc.mit.edu
 //
 // desc: The purpose of the AcquisitionManager class is to handle all
 //       aspects of interfacing with the CAEN hardware and readout,
 //       from setting up the digitizer to processing readout data. In
-//       the template, access is provided to the EventWaveform object
-//       containing the sampled data for 8 channels of the V1720 with
-//       the acquisition loop. Basic digitizer settings are
-//       implemented. The class uses the ADAQDigitizer class to
-//       facilite interaction with the V1720 card via the V1718
-//       USB/VME module. Note that the ::StartAcquisition() and
-//       ::StopAcquisition() methods are run in two different threads
-//       (see CAENAcquisitionTemplate.cc) to support keyboard entry by
-//       the user to control start/stop of the acquisition and
-//       software triggering.
+//       the template, the following standard features are provided:
+//       setup of the ROOT objects necessary for readout, programming
+//       of the digitizer hardware, readout via a standard acquisition
+//       loop, shutdown of the acquisition. It is the task of the user
+//       to (a) modify the above as necessary and (b) to actually
+//       implement something useful to do with the data that is
+//       readout.
+//
+//       Control of the acquisition is provided via the separate
+//       ::StartAcquisition() and ::StopAcquisition() Boost threads
+//       (see CAENAcquisitionTemplate.cc). This enables keyboard entry
+//       by the user to initiate acquisition during acquisition.
 //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -29,85 +31,29 @@ using namespace std;
 #include <boost/assign/std/vector.hpp>
 using namespace boost::assign;
 
-// ADAQ 
 #include "AcquisitionManager.hh"
-#include "ADAQDigitizer.hh"
 
 
 AcquisitionManager::AcquisitionManager()
-  :  V1720Enable(true), V1720LinkOpen(false), V1720BoardAddress(0x00420000),
+  :  DGType(zDT5790M), DGEnable(true), DGLinkOpen(false), DGBoardAddress(0x00000000),
      Verbose(true), Debug(false)
 {
-  ///////////////////////////////////////////////////////////////////
-  // Instantiate a manager to control all interactions with the V1720
-  DGManager = new ADAQDigitizer;
+  //////////////////////////////////
+  // Instantiate a digitizer manager
+  
+  DGManager = new ADAQDigitizer(DGType,         // ADAQ-specified CAEN device type
+				0,              // User-specified ID
+				DGBoardAddress, // Address in VME space
+				0,              // USB link number
+				0);             // CONET node number
   DGManager->SetVerbose(true);
-
-  //////////////////////////////////////
-  // Initialize the digitizer parameters 
-
-  // The "width" or "length" of the acquisition window in V1720
-  // samples (1 sample == 4ns)
-  RecordLength = 1024;
-
-  // The position of the acquisition window relative to the trigger sample
-  PostTriggerSize = 50;
-
-  // Max number of accumulated events that will trigger transfer
-  MaxBLTEvents = 10;
-
-  // Digitizer channel enable
-  DGChannelEnabled += true, false, false, false, false, false, false, false;
-
-  ChannelTriggerThreshold += 2000, 0, 0, 0, 0, 0, 0, 0; // [ADC]
-
-  ChannelDCOffset += 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000;
-
-  ////////////////////////////////////////////////////////////////
-  // Initialize the connection to the VME crate for control of the
-  // V1720 digitizer and V6534 high voltage boards
-
-  InitVMEConnection();
 }
 
 
 AcquisitionManager::~AcquisitionManager()
 {
-  if(V1720Enable)
+  if(DGEnable)
     delete DGManager;
-}
-
-
-void AcquisitionManager::InitVMEConnection()
-{
-  if(Debug)
-    return;
-
-  //////////////////////////////
-  // VME link to the V1720 board
-  
-  if(DGManager and V1720Enable){
-    
-    if(Verbose)
-      cout << "\nAcquisitionManager (main thread) : Opening a link to the V1720 digitizer board ...\n"
-	   <<   "                                   --> V1720Address = 0x" << hex << setw(8) << setfill('0') << V1720BoardAddress << "\n"
-	   << endl;
-
-    int Status = DGManager->OpenLink(V1720BoardAddress);
-    (Status==0) ? V1720LinkOpen = true : V1720LinkOpen = false;
-    
-    if(V1720Enable and !V1720LinkOpen){
-      if(Verbose)
-	cout << "AcquisitionManager (main thread) : Error! A VME link to the V1720 board could not be established! Exiting...\n"
-	     <<   "                                 --> CAEN_DGTZ_ErrorCode == " << dec << Status << "\n"
-	     << endl;
-      exit(-42);
-    }
-    else
-      if(Verbose)
-	cout << "AcquisitionManager (main thread) : A VME link to the V1720 board has been established!\n"
-	     << endl;
-  }
 }
 
 
@@ -116,98 +62,294 @@ void AcquisitionManager::Arm()
   if(Debug)
     return;
   
+  InitConnection();
+  InitParameters();
   InitDigitizer();
 }
 
 
-void AcquisitionManager::InitDigitizer()
+void AcquisitionManager::InitConnection()
 {
-  // If the DGManager has not been instantiated, simply return to the
-  // AcquisitionManager::Arm() function to prevent triggering segfaults
-  // by calling member functions on a non-existent object
-  if(!DGManager)
+  if(Debug)
     return;
-
-  // Initialize the V1720 digitizer board
-  DGManager->Initialize();
-
-  ///////////////////////////////////////////////
-  // Variables for digitizer settings and readout
   
-  // Variable to hold the channel enable mask, ie, sets which
-  // digitizer channels are actively taking data
-  uint32_t ChannelEnableMask = 0;
+  ////////////////////////////
+  // VME link to the digitizer
+  
+  if(DGEnable){
+    
+    if(Verbose)
+      cout << "\nAcquisitionManager (main thread) : Opening a link to the digitizer ...\n"
+	   << endl;
+    
+    int Status = DGManager->OpenLink();
+    (Status==0) ? DGLinkOpen = true : DGLinkOpen = false;
+    
+    if(!DGLinkOpen){
+      if(Verbose)
+	cout << "AcquisitionManager (main thread) : Error! A link to the digitizer could not be established! Exiting...\n"
+	     << endl;
+      exit(-42);
+    }
+    else
+      if(Verbose)
+	cout << "AcquisitionManager (main thread) : A link to the digitizer has been established!\n"
+	     << endl;
+  }
+}
 
-  // Variable for total number of enabled digitizer channels
-  uint32_t NumDGChannelsEnabled = 0;
+
+void AcquisitionManager::InitParameters()
+{
+  /////////////////////////////
+  // Determine firmware type //
+  /////////////////////////////
+  
+  string FirmwareType = DGManager->GetBoardFirmwareType();
+  if(FirmwareType == "STD"){
+    DGStandardFW = true;
+    DGPSDFW = false;
+  }
+  else if(FirmwareType == "PSD"){
+    DGStandardFW = false;
+    DGPSDFW = true;
+  }
+
+  /////////////////////////////
+  // Init readout parameters //
+  /////////////////////////////
+  
+  Int_t NumChannels = DGManager->GetNumChannels();
+
+  if(DGStandardFW){
+    EventPointer = NULL;
+    EventWaveform = NULL;
+    DGManager->AllocateEvent(&EventWaveform);
+  }
+  else if(DGPSDFW){
+    PSDWaveforms = NULL;
+  }
+
+  Buffer = NULL;
+
+  BufferSize = ReadSize = FPGAEvents = PCEvents = 0;
+  for(Int_t ch=0; ch<NumChannels; ch++)
+    NumPSDEvents.push_back(0);
+  
+  DGManager->MallocReadoutBuffer(&Buffer, &BufferSize);
+  
+  if(DGPSDFW){
+    DGManager->MallocDPPEvents(PSDEvents, &PSDEventSize);
+    DGManager->MallocDPPWaveforms(&PSDWaveforms, &PSDWaveformSize); 
+  }
+
+  
+  /////////////////////////////
+  // Init control parameters //
+  /////////////////////////////
+  
+  for(Int_t ch=0; ch<NumChannels; ch++){
+    ChEnabled.push_back(false);
+    ChPosPolarity.push_back(false);
+    ChNegPolarity.push_back(true);
+    ChDCOffset.push_back(0x8000);
+    ChTriggerThreshold.push_back(2000);
+  }
+  ChEnabled[0] = true;
+
+  // Events to accumulate on the digitizer before transfer to PC
+  EventsBeforeReadout = 25;
+  
+  // Trigger type
+  TriggerTypeAutomatic = false;
+  TriggerTypeSoftware = true;
+
+  // Trigger edge type
+  TriggerEdgeRising = true;
+  TriggerEdgeFalling = !TriggerEdgeRising;
 
   // Calculate the channel enable mask, which is a 32-bit integer
-  // describing which of the 8 digitizer channels are enabled. A
-  // 32-bit integer has 8 bytes or 8 "hex" digits; a hex digit set
-  // to "1" in the n-th position in the hex representation indicates
-  // that the n-th channel is enabled. For example, if the
-  // ChannelEnableMask is equal to 0x00110100 then channels 2, 4 and
-  // 5 are enabled for digitization
-  for(int ch=0; ch<DGManager->GetNumChannels(); ch++)
-    if(DGChannelEnabled[ch]){
+  // describing which of the digitizer channels are enabled.
+  
+  for(int ch=0; ch<DGManager->GetNumChannels(); ch++){
+    if(ChEnabled[ch]){
       uint32_t Ch = 0x00000001<<ch;
       ChannelEnableMask |= Ch;
-      NumDGChannelsEnabled++;
     }
+  }
   
-  // Ensure that at least one channel is enabled in the channel
-  // enabled bit mask; if not, return without starting the acquisition
-  // loop, since...well...there ain't shit to acquisition.
+  // Ensure that at least one channel is enabled 
   if((0xff & ChannelEnableMask)==0){
     cout << "\nAcquisitionManager (main thread) : Error! No digitizer channels were enabled, ie, ChannelEnableMask==0!\n"
 	 << endl;
     exit(-42);
   }
   
-  // Define a vector of vectors that will hold the digitized waveforms
-  // in all channels (units of [ADC]). The outer vector (size 8)
-  // represents each digitizer channel; the inner vector (size
-  // RecordLength) represents the waveform. The start address of each
-  // outer vector will be used to create a unique branch in the
-  // waveform TTree object to store each of the 8 digitizer channels 
-  
-  // Resize the outer and inner vector to the appropriate, fixed size
-  Waveforms.resize(DGManager->GetNumChannels());
-  for(int i=0; i<DGManager->GetNumChannels(); i++)
-    Waveforms[i].resize(RecordLength);
-  
+  if(DGStandardFW){
 
-  ///////////////////////////////////////////////////////
-  // Program V1720 digitizer with acquisition settings //
-  ///////////////////////////////////////////////////////
+    // Initialize vector-of-vectors; outer vector is size of channels,
+    // inner vector is length of waveform in samples
+
+    Waveforms.resize(DGManager->GetNumChannels());
+    for(int ch=0; ch<DGManager->GetNumChannels(); ch++)
+      Waveforms[ch].resize(RecordLength);
+    
+    // The "width" or "length" of the acquisition window [samples]
+    RecordLength = 512;
+    
+    // Position of the trigger within the acquisition window [%]
+    PostTriggerSize = 50;
+    
+    for(int ch=0; ch<NumChannels; ch++){
+      ChBaselineCalcMin.push_back(0);
+      ChBaselineCalcMax.push_back(50);
+    }
+  }
+  else if(DGPSDFW){
+    for(int ch=0; ch<NumChannels; ch++){
+      ChRecordLength.push_back(512);
+      ChBaselineSamples.push_back(0);
+      ChChargeSensitivity.push_back(0);
+      ChShortGate.push_back(50);
+      ChLongGate.push_back(462);
+      ChPreTrigger.push_back(100);
+      ChGateOffset.push_back(50);
+    }
+  }
+}  
+
+
+void AcquisitionManager::InitDigitizer()
+{
+  if(!DGLinkOpen)
+    return;
+  
+  // Initialize the digitizer board and reset
+  DGManager->Initialize();
 
   // Reset the digitizer to default state
   DGManager->Reset();
-  
-  // Set the trigger threshold individually for each of the 8
-  // digitizer channels [ADC] and the DC offsets for each channel
-  for(int ch=0; ch<DGManager->GetNumChannels(); ch++){
-    DGManager->SetChannelTriggerThreshold(ch, ChannelTriggerThreshold[ch]);
-    DGManager->SetChannelDCOffset(ch, ChannelDCOffset[ch]);
+
+  // Get the number of digitizer channels
+  Int_t NumChannels = DGManager->GetNumChannels();
+
+  /////////////////////////////////////////
+  // Program the STD firmware digitizers //
+  /////////////////////////////////////////
+
+  if(DGStandardFW){
+    
+    for(int ch=0; ch<NumChannels; ch++){
+      DGManager->SetChannelTriggerThreshold(ch, ChTriggerThreshold[ch]);
+      DGManager->SetChannelDCOffset(ch, ChDCOffset[ch]);
+
+      if(ChPosPolarity[ch])
+	DGManager->SetChannelPulsePolarity(ch, CAEN_DGTZ_PulsePolarityPositive);
+      else
+	DGManager->SetChannelPulsePolarity(ch, CAEN_DGTZ_PulsePolarityNegative);
+
+      if(TriggerEdgeRising)
+	DGManager->SetTriggerEdge(ch, "Rising");
+      else
+	DGManager->SetTriggerEdge(ch, "Falling");
+    }
+
+    DGManager->SetChannelEnableMask(ChannelEnableMask);
+    DGManager->SetRecordLength(RecordLength);
+    DGManager->SetPostTriggerSize(PostTriggerSize);
+    DGManager->SetAcquisitionControl("Software");
+    DGManager->SetZSMode("None");
+    DGManager->SetMaxNumEventsBLT(EventsBeforeReadout);
+
+    if(TriggerTypeAutomatic)
+      DGManager->EnableAutoTrigger(ChannelEnableMask);
+    else
+      DGManager->DisableAutoTrigger(ChannelEnableMask);
+
+    if(TriggerTypeSoftware)
+      DGManager->EnableSWTrigger();
+    else
+      DGManager->DisableSWTrigger();
+
+    DGManager->DisableExternalTrigger();
   }
 
-  // Set the V1720 triggering configuration
-  DGManager->EnableSWTrigger();
-  DGManager->DisableAutoTrigger(ChannelEnableMask);
-  DGManager->DisableExternalTrigger();
   
-  // Set the record length of the acquisition window
-  DGManager->SetRecordLength(RecordLength);
+  /////////////////////////////////////////
+  // Program the PSD firmware digitizers //
+  /////////////////////////////////////////
 
-  // Set the channel enable mask
-  DGManager->SetChannelEnableMask(ChannelEnableMask);
+  else if(DGPSDFW){
+    
+    CAEN_DGTZ_DPP_PSD_Params_t PSDParameters;
+    
+    for(int ch=0; ch<NumChannels; ch++){
+      
+      PSDParameters.nsbl[ch] = ChBaselineSamples[ch];
+      PSDParameters.csens[ch] = ChChargeSensitivity[ch];
+      
+      if(TriggerTypeAutomatic)
+	PSDParameters.selft[ch] = 1;
+      else if(TriggerTypeSoftware)
+	PSDParameters.selft[ch] = 0;
+      
+      PSDParameters.thr[ch] = ChTriggerThreshold[ch];
+      PSDParameters.tvaw[ch] = 0;
+      PSDParameters.trgc[ch] = CAEN_DGTZ_DPP_TriggerConfig_Threshold;
+      
+      PSDParameters.sgate[ch] = ChShortGate[ch];
+      PSDParameters.lgate[ch] = ChLongGate[ch]; 
+      PSDParameters.pgate[ch] = ChGateOffset[ch];
+    }
 
-  // Set the maximum number of events that will be accumulated before
-  // the V1720 FPGA buffer is dumped to PC memory
-  DGManager->SetMaxNumEventsBLT(MaxBLTEvents);
+    DGManager->SetDPPParameters(ChannelEnableMask, &PSDParameters);
 
-  // Set the percentage of acquisition window that occurs after trigger
-  DGManager->SetPostTriggerSize(PostTriggerSize);
+
+    ///////////////////////////////////////////////////////
+    // Set channel-specific, non-PSD structure PSD settings
+    
+    for(Int_t ch=0; ch<NumChannels; ch++){
+      
+      DGManager->SetRecordLength(ChRecordLength[ch], ch);
+      DGManager->SetChannelDCOffset(ch, ChDCOffset[ch]);
+      DGManager->SetDPPPreTriggerSize(ch, ChPreTrigger[ch]);
+      
+      if(ChPosPolarity[ch])
+	DGManager->SetChannelPulsePolarity(ch, CAEN_DGTZ_PulsePolarityPositive);
+      else if(ChNegPolarity[ch])
+	DGManager->SetChannelPulsePolarity(ch, CAEN_DGTZ_PulsePolarityNegative);
+    }
+    
+    
+    ////////////////////////////////////////////
+    // Set global non-PSD structure PSD settings
+    
+    DGManager->SetDPPAcquisitionMode(CAEN_DGTZ_DPP_ACQ_MODE_List, CAEN_DGTZ_DPP_SAVE_PARAM_EnergyAndTime);
+    DGManager->SetDPPTriggerMode(CAEN_DGTZ_DPP_TriggerMode_Normal);
+    DGManager->SetIOLevel(CAEN_DGTZ_IOLevel_TTL);
+    DGManager->SetDPPEventAggregation(EventsBeforeReadout, 0);
+    DGManager->SetRunSynchronizationMode(CAEN_DGTZ_RUN_SYNC_Disabled);
+  }
+}
+
+
+void AcquisitionManager::StartAcquisition2()
+{
+  cout << "AcquisitionManager (acquisition thread) : Beginning waveform acquisition...\n"
+       << endl;
+  
+  while(Debug){
+    boost::posix_time::milliseconds Time(250);
+    cout << "AcquisitionManager (acquisition thread) : Acquisition loop is running in debug mode!" << endl;
+    boost::this_thread::sleep(Time);
+  }
+
+
+
+
+
+
+  
 }
 
 
@@ -222,65 +364,34 @@ void AcquisitionManager::StartAcquisition()
     boost::this_thread::sleep(Time);
   }
   
-  // Set the EventPointer and the EventWaveform pointer data members
-  // to point to nothing; their destination addresses will be set in
-  // the acquisition 'while' loop below as events are acquired
-  EventPointer = NULL;
-  EventWaveform = NULL;
-
-  // Set the Buffer membger data to point to nothing; destination
-  // address will be set in the acquisition 'while' loop below
-  Buffer = NULL;  
-
   // Total number of accumulated events, which is useful to output to
   // stdout for the user's benefit
   int TotalEvents = 0;
   
-  // The array (of length 'RecordLength' in units of V1720 samples)
-  // used to receive the digitized waveform from the V1720 board
-  double Voltage[RecordLength]; // [ADC]
-  
-  // Allocate memory for the readout buffer on the PC
-  DGManager->MallocReadoutBuffer(&Buffer, &Size);
+  // The array (of length 'RecordLength' in units of samples) used to
+  // receive the digitized waveform from the digitizer [ADC]
+  double Voltage[RecordLength];
 
   // Set the V1720 to begin acquiring data
   DGManager->SWStartAcquisition();
 
-
-  /////////////////////////////////
-  // V1720 digitizer acquisition //
-  /////////////////////////////////
-  // The following loops reads digitized data from the digitizers into
-  // local PC memory, principally as arrays of voltage versus time (or
-  // sample). To maximize data throughput, the following loop should
-  // be be as efficient as possible.
-
-  // The following terminology is important:
-  // V1720 buffer == the memory buffer onboard the FPGA of the V1720 board
-  // PC buffer == the memory buffer allocated locally on the PC
-  // Event == an acquisition window caused by a channel trigger threshold being exceeded
-  // NumEvents == the number of events that is allowed to accumulate on the V1720 buffer
-  //              before being automatically readout into the PC buffer
-  // Record Length == the length of the acquisition window in 4 ns units
-  // Sample ==  a single value between 0 and 4095 of digitized voltage
-
   while(true){
     
-    // Read data from the V1720 buffer into the PC buffer
+    // Read data from the buffer into the PC buffer
     DGManager->ReadData(Buffer, &BufferSize);    
     
     // Determine the number of events in the buffer
-    DGManager->GetNumEvents(Buffer, BufferSize, &NumEvents);
+    DGManager->GetNumEvents(Buffer, BufferSize, &PCEvents);
 
     // If there are no events in the current buffer then continue in
     // the 'while' loop without executing the CPU intensive 'for'
     // loops on the next lines. This maximizes code efficiency and
     // only scans/processes events when there is need to do so.
-    if(NumEvents==0)
+    if(PCEvents==0)
       continue;
     
     // For each event in the PC memory buffer...
-    for(uint32_t evt=0; evt<NumEvents; evt++){
+    for(uint32_t evt=0; evt<PCEvents; evt++){
       
       // Get the event information
       DGManager->GetEventInfo(Buffer, BufferSize, evt, &EventInfo, &EventPointer);
@@ -297,7 +408,7 @@ void AcquisitionManager::StartAcquisition()
       for(int ch=0; ch<DGManager->GetNumChannels(); ch++){
 	
 	// Only proceed to waveform analysis if the channel is enabled
-	if(!DGChannelEnabled[ch])
+	if(!ChEnabled[ch])
 	  continue;
 
 	for(uint32_t sample=0; sample<RecordLength; sample++){
@@ -305,9 +416,7 @@ void AcquisitionManager::StartAcquisition()
 	  Voltage[sample] = EventWaveform->DataChannel[ch][sample]; // [ADC]
 	}
       }
-      // Free the memory allocated to the digitizer event
-      DGManager->FreeEvent(&EventWaveform);
-      
+
       TotalEvents++;
       
       if(TotalEvents % 1 == 0){
@@ -329,13 +438,12 @@ void AcquisitionManager::StopAcquisition(boost::thread *Acquisition_thread)
 
   // This member function is run in the Escape_thread and receives the
   // Acquisition_thread as a function argument. The purpose of this
-  // thread is primarily to provide an escape mechanism from the
-  // Acquisition_thread via Boost's thread interrupt method. At
-  // present, the user must physically stroke a "0" then "Enter" to
-  // terminate the acquisition.
+  // thread is primarily to provide with the ability to intervene with
+  // the program during the acquisition loop via Boost's thread
+  // interrupt method.
 
   cout << "AcquisitionManager (escape thread) : Enter a '0' to terminate acquisition!\n" 
-       << "                                     Enter 1 '1' to trigger the V1720!\n" 
+       << "                                     Enter 1 '1' to trigger the digitizer!\n" 
        << endl;
 
   int Choice = -1;
@@ -345,8 +453,7 @@ void AcquisitionManager::StopAcquisition(boost::thread *Acquisition_thread)
   while(RunLoop){
     cin >> Choice;
 
-    // Terminate the Acquisition_thread and proceed to "disarm" phase
-    // of the acquisition
+    // Terminate the Acquisition_thread and proceed to disarm phase
     if(Choice == 0){
       Acquisition_thread->interrupt();
       RunLoop = false;
@@ -366,14 +473,22 @@ void AcquisitionManager::Disarm()
   if(Debug)
     return;
 
-  // Stop the V1720 acquisition
+  // Stop the digitizer acquisition
   DGManager->SWStopAcquisition();
   
-  // Free the PC memory associated with V1720 digitizer readout
+  // Free the PC memory associated with digitizer readout
   DGManager->FreeReadoutBuffer(&Buffer);
 
-  // Close a VME link to the V1720 board
-  if(V1720Enable){
+  if(DGStandardFW){
+    DGManager->FreeEvent(&EventWaveform);
+  }
+  else if(DGPSDFW){
+    DGManager->FreeDPPEvents((void **)PSDEvents);
+    DGManager->FreeDPPWaveforms(PSDWaveforms);
+  }
+  
+  // Close a VME link to the digitizer
+  if(DGEnable){
     DGManager->CloseLink();
   }
 }
